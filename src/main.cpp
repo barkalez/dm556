@@ -28,24 +28,20 @@ void setup() {
   while (!Serial);
   Serial.println("Arduino Nano con HC-05 iniciado");
 
-  // Configurar pines del DM556
   pinMode(PULSE_PIN, OUTPUT);
   pinMode(DIR_PIN, OUTPUT);
   pinMode(ENABLE_PIN, OUTPUT);
   digitalWrite(ENABLE_PIN, LOW);
 
-  // Configurar pines del HC-05
   pinMode(HC05_EN, OUTPUT);
   digitalWrite(HC05_EN, LOW);
   pinMode(HC05_STATE, INPUT);
 
-  // Configurar endstop
-  pinMode(ENDSTOP_PIN, INPUT_PULLUP); // Pull-up interno, LOW cuando se activa
+  pinMode(ENDSTOP_PIN, INPUT_PULLUP);
 
-  // Configurar stepper
   stepper.setMaxSpeed(3200);
   stepper.setAcceleration(1600);
-  stepper.setCurrentPosition(0); // Posición inicial 0
+  stepper.setCurrentPosition(0);
 }
 
 void loop() {
@@ -64,13 +60,13 @@ void loop() {
 
 void parseGCode(String gcode) {
   gcode.trim();
-  Serial.print("Procesando G-code: "); // Mostrar comando en terminal
+  Serial.print("Procesando G-code: ");
   Serial.println(gcode);
 
   if (gcode.startsWith("G1")) {
     int indexX = gcode.indexOf('X');
     int indexF = gcode.indexOf('F');
-    float x = 0;
+    float x = stepper.currentPosition(); // Posición absoluta por defecto
     float f = stepper.maxSpeed();
 
     if (indexX != -1) {
@@ -80,13 +76,11 @@ void parseGCode(String gcode) {
       f = gcode.substring(indexF + 1).toFloat();
     }
 
-    // Calcular posición absoluta objetivo
-    long targetPosition = stepper.currentPosition() + x;
+    long targetPosition = x; // Usar X como posición absoluta
 
-    // Verificar límites
     if (targetPosition > MAX_STEPS) {
       Serial.println("Límite máximo alcanzado (40000 pasos)");
-      Serial.println("END"); // Enviar a la app
+      Serial.println("END");
       stepper.stop();
       return;
     }
@@ -96,7 +90,7 @@ void parseGCode(String gcode) {
       return;
     }
 
-    Serial.print("Mover relativo X: ");
+    Serial.print("Mover a posición absoluta X: ");
     Serial.println(x);
     Serial.print("Velocidad: ");
     Serial.println(f);
@@ -104,13 +98,13 @@ void parseGCode(String gcode) {
     Serial.println(stepper.currentPosition());
 
     stepper.setSpeed(f);
-    stepper.moveTo(targetPosition); // Mover a posición absoluta calculada
+    stepper.moveTo(targetPosition); // Mover a posición absoluta
     stepper.runToPosition();
 
     Serial.println("Movimiento completado");
     Serial.print("Posición final: ");
     Serial.println(stepper.currentPosition());
-    Serial.print("POS:"); // Enviar posición a la app al finalizar
+    Serial.print("POS:");
     Serial.println(stepper.currentPosition());
   }
 
@@ -118,9 +112,8 @@ void parseGCode(String gcode) {
     Serial.println("Moviendo a la posición de origen (homing)");
 
     stepper.setSpeed(3200);
-    stepper.move(-100000); // Mover hacia el endstop
+    stepper.move(-100000);
 
-    // Parar cuando el endstop sea LOW
     while (digitalRead(ENDSTOP_PIN) == HIGH && stepper.distanceToGo() != 0) {
       stepper.run();
     }
@@ -129,14 +122,14 @@ void parseGCode(String gcode) {
     Serial.println("Endstop detectado");
 
     stepper.setSpeed(3200);
-    stepper.move(200); // Retroceder 200 pasos
+    stepper.move(200);
     stepper.runToPosition();
     Serial.println("Retrocedido 200 pasos");
 
-    stepper.setCurrentPosition(0); // Establecer posición absoluta 0
+    stepper.setCurrentPosition(0);
     Serial.println("Posición absoluta establecida a 0");
-    Serial.println("pos0"); // Enviar a la app
-    Serial.print("POS:"); // Enviar posición a la app al finalizar
+    Serial.println("pos0");
+    Serial.print("POS:");
     Serial.println(stepper.currentPosition());
   }
 }
