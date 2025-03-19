@@ -19,6 +19,20 @@ AccelStepper stepper(AccelStepper::DRIVER, PULSE_PIN, DIR_PIN);
 // Límite máximo de pasos
 const long MAX_STEPS = 40000;
 
+// Variables para movimiento continuo
+bool continuousMovement = false;
+int continuousDirection = 1;  // 1 para avanzar, -1 para retroceder
+float continuousSpeed = 3200;
+
+// Variables para control de parada suave
+long stopPosition = 0;
+bool performingStopSequence = false;
+bool returningToStopPosition = false;
+
+// Añade estas variables para el movimiento acelerado
+long targetPosition = 0;
+bool useAcceleratedMovement = false;
+
 void parseGCode(String gcode);
 
 String receivedData = "";
@@ -46,6 +60,7 @@ void setup() {
 
 void loop() {
   if (digitalRead(HC05_STATE) == HIGH) {
+    // Procesar datos Bluetooth
     while (Serial.available()) {
       char received = Serial.read();
       receivedData += received;
@@ -55,7 +70,77 @@ void loop() {
       }
     }
   }
-  stepper.run();
+
+  // Manejo del movimiento continuo
+  if (continuousMovement) {
+    // Verificar límites
+    if ((continuousDirection > 0 && stepper.currentPosition() < MAX_STEPS) || 
+        (continuousDirection < 0 && stepper.currentPosition() > 0)) {
+      
+      // Cambiamos esta parte: en lugar de runSpeed(), usamos run() para respetar la aceleración
+      if (useAcceleratedMovement) {
+        stepper.run(); // Este método respeta la aceleración
+        
+        // Si estamos cerca del objetivo, configurar un nuevo objetivo más lejano
+        if (abs(stepper.distanceToGo()) < 10000) {
+          if (continuousDirection > 0) {
+            targetPosition = stepper.currentPosition() + 1000000;
+          } else {
+            targetPosition = stepper.currentPosition() - 1000000;
+          }
+          stepper.moveTo(targetPosition);
+        }
+      } else {
+        // Modo de velocidad constante (antiguo)
+        stepper.runSpeed();
+      }
+    } else {
+      // Detiene el movimiento si alcanza límites
+      continuousMovement = false;
+      useAcceleratedMovement = false;
+      stepper.stop();
+      Serial.println("Límite alcanzado, movimiento detenido");
+      Serial.print("POS:");
+      Serial.println(stepper.currentPosition());
+    }
+  } 
+  // Manejo de la secuencia de parada suave
+  else if (performingStopSequence) {
+    // Si el motor ya se detuvo después de la desaceleración
+    if (stepper.distanceToGo() == 0 && stepper.speed() == 0) {
+      performingStopSequence = false;
+      returningToStopPosition = true;
+      
+      // Configuramos parámetros para un movimiento de retorno preciso y suave
+      stepper.setMaxSpeed(1000); // Velocidad más lenta para mayor precisión
+      stepper.setAcceleration(500); // Aceleración suave
+      stepper.moveTo(stopPosition); // Movemos a la posición exacta de parada
+      
+      Serial.println("Desaceleración completa, retornando a posición exacta");
+    }
+    else {
+      // Continuamos con la desaceleración
+      stepper.run();
+    }
+  }
+  // Manejo del retorno a la posición exacta
+  else if (returningToStopPosition) {
+    // Si llegamos a la posición deseada
+    if (stepper.distanceToGo() == 0) {
+      returningToStopPosition = false;
+      Serial.println("Retorno a posición exacta completado");
+      Serial.print("POS:");
+      Serial.println(stepper.currentPosition());
+    }
+    else {
+      // Continuamos con el movimiento de retorno
+      stepper.run();
+    }
+  }
+  else {
+    // Comportamiento normal para movimientos precisos
+    stepper.run();
+  }
 }
 
 void parseGCode(String gcode) {
@@ -63,6 +148,132 @@ void parseGCode(String gcode) {
   Serial.print("Procesando G-code: ");
   Serial.println(gcode);
 
+  // Comando para movimiento continuo hacia adelante
+  if (gcode.startsWith("CONT+")) {
+    continuousMovement = true;
+    continuousDirection = 1;
+    performingStopSequence = false;
+    returningToStopPosition = false;
+    
+    // Procesar velocidad (F)
+    int indexF = gcode.indexOf('F');
+    if (indexF != -1) {
+      int indexA = gcode.indexOf('A');
+      if (indexA != -1) {
+        continuousSpeed = gcode.substring(indexF + 1, indexA).toFloat();
+      } else {
+        continuousSpeed = gcode.substring(indexF + 1).toFloat();
+      }
+    } else {
+      continuousSpeed = 3200;
+    }
+    
+    // Procesar aceleración (A)
+    int indexA = gcode.indexOf('A');
+    long acceleration = 2000; // Valor por defecto
+    if (indexA != -1) {
+      acceleration = gcode.substring(indexA + 1).toFloat();
+    }
+    
+    // Configuramos el movimiento acelerado
+    stepper.setAcceleration(acceleration);
+    stepper.setMaxSpeed(continuousSpeed);
+    
+    // Modo acelerado: establecer un objetivo lejano en la dirección correcta
+    if (continuousDirection > 0) {
+      targetPosition = stepper.currentPosition() + 1000000; // Un número grande hacia adelante
+    } else {
+      targetPosition = stepper.currentPosition() - 1000000; // Un número grande hacia atrás
+    }
+    stepper.moveTo(targetPosition);
+    useAcceleratedMovement = true;
+    
+    Serial.print("Iniciando movimiento continuo acelerado con velocidad máxima ");
+    Serial.print(continuousSpeed);
+    Serial.print(" y aceleración ");
+    Serial.println(acceleration);
+    return;
+  }
+
+  // Comando para movimiento continuo hacia atrás (similar al anterior)
+  if (gcode.startsWith("CONT-")) {
+    continuousMovement = true;
+    continuousDirection = -1;
+    performingStopSequence = false;
+    returningToStopPosition = false;
+    
+    // Procesar velocidad (F)
+    int indexF = gcode.indexOf('F');
+    if (indexF != -1) {
+      int indexA = gcode.indexOf('A');
+      if (indexA != -1) {
+        continuousSpeed = gcode.substring(indexF + 1, indexA).toFloat();
+      } else {
+        continuousSpeed = gcode.substring(indexF + 1).toFloat();
+      }
+    } else {
+      continuousSpeed = 3200;
+    }
+    
+    // Procesar aceleración (A)
+    int indexA = gcode.indexOf('A');
+    long acceleration = 2000; // Valor por defecto
+    if (indexA != -1) {
+      acceleration = gcode.substring(indexA + 1).toFloat();
+    }
+    
+    // Configuramos el movimiento acelerado
+    stepper.setAcceleration(acceleration);
+    stepper.setMaxSpeed(continuousSpeed);
+    
+    // Modo acelerado: establecer un objetivo lejano en la dirección correcta
+    targetPosition = stepper.currentPosition() - 1000000; // Un número grande hacia atrás
+    stepper.moveTo(targetPosition);
+    useAcceleratedMovement = true;
+    
+    Serial.print("Iniciando movimiento continuo acelerado con velocidad máxima ");
+    Serial.print(continuousSpeed);
+    Serial.print(" y aceleración ");
+    Serial.println(acceleration);
+    return;
+  }
+
+  // Comando para detener movimiento continuo con aceleración personalizada
+  if (gcode.startsWith("STOP")) {
+    if (continuousMovement) {
+      // Registramos la posición exacta donde se solicitó la parada
+      stopPosition = stepper.currentPosition();
+      Serial.print("Posición de stop registrada: ");
+      Serial.println(stopPosition);
+      
+      // Iniciamos secuencia de parada suave
+      continuousMovement = false;
+      performingStopSequence = true;
+      
+      // Procesar aceleración (A) para la parada
+      int indexA = gcode.indexOf('A');
+      long acceleration = 2000; // Valor por defecto
+      if (indexA != -1) {
+        acceleration = gcode.substring(indexA + 1).toFloat();
+      }
+      
+      float currentSpeed = stepper.speed();
+      stepper.setAcceleration(acceleration);
+      
+      // En lugar de fijar velocidad a 0, crear un movimiento con desaceleración
+      if (currentSpeed > 0) {
+        stepper.move(500); // Movimiento adicional con desaceleración
+      } else {
+        stepper.move(-500); // Movimiento negativo con desaceleración
+      }
+      
+      Serial.print("Iniciando parada suave con aceleración: ");
+      Serial.println(acceleration);
+    }
+    return;
+  }
+
+  // Comando G1 para movimiento a posición específica
   if (gcode.startsWith("G1")) {
     int indexX = gcode.indexOf('X');
     int indexF = gcode.indexOf('F');
@@ -106,6 +317,15 @@ void parseGCode(String gcode) {
     Serial.println(stepper.currentPosition());
     Serial.print("POS:");
     Serial.println(stepper.currentPosition());
+
+    // Procesar aceleración (A)
+    int indexA = gcode.indexOf('A');
+    if (indexA != -1) {
+      long acceleration = gcode.substring(indexA + 1).toFloat();
+      stepper.setAcceleration(acceleration);
+      Serial.print("Aceleración configurada a: ");
+      Serial.println(acceleration);
+    }
   }
 
   if (gcode.startsWith("G28")) {
