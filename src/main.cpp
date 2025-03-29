@@ -13,11 +13,9 @@
 // Pin para endstop
 #define ENDSTOP_PIN 7 // D7 como endstop
 
-// Configuración de AccelStepper
-AccelStepper stepper(AccelStepper::DRIVER, PULSE_PIN, DIR_PIN);
-
-// Límite máximo de pasos
-const long MAX_STEPS = 40000;
+// Create an AccelStepper instance
+// The first parameter is the interface type (1 = driver step/dir interface)
+AccelStepper stepper(1, PULSE_PIN, DIR_PIN);
 
 // Variables para movimiento continuo
 bool continuousMovement = false;
@@ -74,8 +72,8 @@ void loop() {
   // Manejo del movimiento continuo
   if (continuousMovement) {
     // Verificar límites
-    if ((continuousDirection > 0 && stepper.currentPosition() < MAX_STEPS) || 
-        (continuousDirection < 0 && stepper.currentPosition() > 0)) {
+    if ((continuousDirection > 0 && stepper.currentPosition() < targetPosition) || 
+        (continuousDirection < 0 && stepper.currentPosition() > targetPosition)) {
       
       // Cambiamos esta parte: en lugar de runSpeed(), usamos run() para respetar la aceleración
       if (useAcceleratedMovement) {
@@ -238,37 +236,32 @@ void parseGCode(String gcode) {
     return;
   }
 
-  // Comando para detener movimiento continuo con aceleración personalizada
+  // Comando para detener movimiento continuo INMEDIATAMENTE
   if (gcode.startsWith("STOP")) {
     if (continuousMovement) {
-      // Registramos la posición exacta donde se solicitó la parada
-      stopPosition = stepper.currentPosition();
-      Serial.print("Posición de stop registrada: ");
-      Serial.println(stopPosition);
-      
-      // Iniciamos secuencia de parada suave
+      // Detenemos el modo de movimiento continuo
       continuousMovement = false;
-      performingStopSequence = true;
       
-      // Procesar aceleración (A) para la parada
-      int indexA = gcode.indexOf('A');
-      long acceleration = 2000; // Valor por defecto
-      if (indexA != -1) {
-        acceleration = gcode.substring(indexA + 1).toFloat();
-      }
+      // Deshabilitamos cualquier secuencia de parada suave
+      performingStopSequence = false;
+      returningToStopPosition = false;
+      useAcceleratedMovement = false;
       
-      float currentSpeed = stepper.speed();
-      stepper.setAcceleration(acceleration);
+      // Paramos inmediatamente el motor
+      stepper.setSpeed(0); // Detiene la velocidad
+      stepper.stop(); // Detiene cualquier movimiento planificado
+      stepper.disableOutputs(); // Desactiva las bobinas para parada inmediata
+      delay(5); // Pequeña pausa
+      stepper.enableOutputs(); // Reactiva el motor
       
-      // En lugar de fijar velocidad a 0, crear un movimiento con desaceleración
-      if (currentSpeed > 0) {
-        stepper.move(500); // Movimiento adicional con desaceleración
-      } else {
-        stepper.move(-500); // Movimiento negativo con desaceleración
-      }
+      // Actualizamos la posición actual para mantener la precisión
+      long currentPos = stepper.currentPosition();
+      stepper.setCurrentPosition(currentPos);
       
-      Serial.print("Iniciando parada suave con aceleración: ");
-      Serial.println(acceleration);
+      // Notificar la posición actual
+      Serial.println("Movimiento detenido en seco");
+      Serial.print("POS:");
+      Serial.println(stepper.currentPosition());
     }
     return;
   }
@@ -289,12 +282,6 @@ void parseGCode(String gcode) {
 
     long targetPosition = x; // Usar X como posición absoluta
 
-    if (targetPosition > MAX_STEPS) {
-      Serial.println("Límite máximo alcanzado (40000 pasos)");
-      Serial.println("END");
-      stepper.stop();
-      return;
-    }
     if (targetPosition < 0) {
       Serial.println("Límite mínimo alcanzado (0 pasos)");
       stepper.stop();
@@ -329,27 +316,42 @@ void parseGCode(String gcode) {
   }
 
   if (gcode.startsWith("G28")) {
-    Serial.println("Moviendo a la posición de origen (homing)");
-
-    stepper.setSpeed(3200);
-    stepper.move(-100000);
-
-    while (digitalRead(ENDSTOP_PIN) == HIGH && stepper.distanceToGo() != 0) {
-      stepper.run();
+    // Comando de homing
+    Serial.println("Iniciando homing...");
+    
+    // Primero mover hacia atrás hasta encontrar el home
+    stepper.setSpeed(-1600); // Velocidad de homing
+    while (digitalRead(ENDSTOP_PIN) == HIGH) {
+      stepper.runSpeed();
     }
-
     stepper.stop();
-    Serial.println("Endstop detectado");
-
-    stepper.setSpeed(3200);
-    stepper.move(200);
-    stepper.runToPosition();
-    Serial.println("Retrocedido 200 pasos");
-
+    
+    // Pequeña pausa para estabilizar
+    delay(100);
+    
+    // Ahora mover hacia adelante hasta perder el home
+    stepper.setSpeed(800); // Velocidad más lenta para precisión
+    while (digitalRead(ENDSTOP_PIN) == LOW) {
+      stepper.runSpeed();
+    }
+    stepper.stop();
+    
+    // Pequeña pausa para estabilizar
+    delay(100);
+    
+    // Finalmente, mover hacia atrás hasta encontrar el home una vez más
+    stepper.setSpeed(-400); // Velocidad muy lenta para máxima precisión
+    while (digitalRead(ENDSTOP_PIN) == HIGH) {
+      stepper.runSpeed();
+    }
+    stepper.stop();
+    
+    // Establecer la posición actual como 0
     stepper.setCurrentPosition(0);
-    Serial.println("Posición absoluta establecida a 0");
-    Serial.println("pos0");
-    Serial.print("POS:");
-    Serial.println(stepper.currentPosition());
+    
+    // Enviar comando especial para indicar que el homing está completo
+    Serial.println("HOMING_COMPLETE");
+    
+    return;
   }
 }
